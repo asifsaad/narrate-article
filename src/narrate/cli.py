@@ -228,6 +228,122 @@ def speak_command(
         console.print(f"  Speed: {result.total_duration / result.elapsed_seconds:.1f}x realtime")
 
 
+@app.command("article")
+def article_command(
+    source: Path = typer.Argument(..., exists=True, dir_okay=False, help="Markdown or text file"),
+    output: Path = typer.Option(
+        None, "--output", "-o", help="Audio file to write. Default: out/<name>.mp3"
+    ),
+    voice: str = typer.Option("af_heart", "--voice", help="Voice id (see `narrate voices`)"),
+    speed: float = typer.Option(1.0, "--speed", min=0.5, max=2.0),
+    engine: str = typer.Option("kokoro", "--engine"),
+    audio_format: str = typer.Option(
+        None, "--format", help="mp3, m4a, opus or wav. Default: from --output, else mp3"
+    ),
+    bitrate: str = typer.Option("128k", "--bitrate"),
+    keep_citations: bool = typer.Option(False, "--keep-citations"),
+    no_loudnorm: bool = typer.Option(False, "--no-loudnorm", help="Skip loudness normalization"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Re-synthesize everything"),
+    lexicon: Path = typer.Option(None, "--lexicon", help="Pronunciation overrides YAML"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Estimate the length and write the script; synthesize nothing"
+    ),
+    work_dir: Path = typer.Option(Path("work"), "--work-dir"),
+    output_dir: Path = typer.Option(Path("out"), "--output-dir"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Narrate a short markdown or text file into a single audio file."""
+    from narrate.article import (
+        LONG_ARTICLE_MINUTES,
+        load_article,
+        plan_article,
+        render_article,
+        resolve_output,
+    )
+
+    _configure_logging(verbose)
+
+    output, audio_format = _guard(
+        lambda: resolve_output(
+            source, output=output, audio_format=audio_format, output_dir=output_dir
+        )
+    )
+    config = NarrationConfig(
+        engine=engine,
+        voice=voice,
+        speed=speed,
+        audio_format=audio_format,
+        bitrate=bitrate,
+        normalize_loudness=not no_loudnorm,
+        keep_citations=keep_citations,
+        lexicon_path=lexicon,
+        work_dir=work_dir,
+        output_dir=output_dir,
+        use_cache=not no_cache,
+    )
+
+    book = _guard(lambda: load_article(source))
+    plan = _guard(lambda: plan_article(book, config))
+    if not plan.sections:
+        console.print(f"[red]Nothing to narrate in {source.name}.[/red]")
+        raise typer.Exit(1)
+
+    estimate = plan.estimated_seconds()
+    console.print(
+        f"[bold]{book.title}[/bold] — {len(plan.sections)} sections, "
+        f"{plan.word_count:,} words, ≈{format_duration(estimate)}, voice [cyan]{voice}[/cyan]"
+    )
+    if estimate > LONG_ARTICLE_MINUTES * 60:
+        console.print(
+            f"[yellow]That is long for one file.[/yellow] For chapters you can skip "
+            f"between, try [dim]narrate speak {source} --format m4b[/dim]"
+        )
+
+    if dry_run:
+        table = Table(header_style="bold", show_edge=False)
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("section")
+        table.add_column("words", justify="right")
+        table.add_column("≈ length", justify="right")
+        for position, section in enumerate(plan.sections, start=1):
+            table.add_row(
+                str(position),
+                section.chapter.title,
+                f"{section.word_count:,}",
+                format_duration(plan.estimated_seconds(section)),
+            )
+        console.print(table)
+
+        script = output.with_name(f"{output.stem}.script.txt")
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(plan.script(), encoding="utf-8")
+        console.print(f"  Script: [cyan]{script}[/cyan] — exactly what the engine will read")
+        return
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress_bar:
+        task = progress_bar.add_task("Synthesizing", total=plan.chunk_count)
+        result = _guard(
+            lambda: render_article(
+                plan, config, output=output, on_chunk=lambda: progress_bar.advance(task)
+            )
+        )
+        progress_bar.update(task, description="Done")
+
+    console.print()
+    console.print(f"[green]✓[/green] [cyan]{result.path}[/cyan]")
+    console.print(f"  Audio: {format_duration(result.duration_seconds)}")
+    console.print(f"  Took:  {format_duration(result.elapsed_seconds)} ({result.cache_summary})")
+    if result.elapsed_seconds > 0:
+        console.print(f"  Speed: {result.duration_seconds / result.elapsed_seconds:.1f}x realtime")
+
+
 def _guard(action):
     """Turn expected failures into clean messages instead of tracebacks."""
     from narrate.ingest import NoTextLayerError, UnsupportedFormatError

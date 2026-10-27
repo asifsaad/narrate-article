@@ -12,6 +12,7 @@ from narrate.document import Chunk
 from narrate.normalize import Lexicon, RuleNormalizer
 from narrate.normalize.rules import _say_year, expand_acronyms
 from narrate.segment import (
+    HEADING_SILENCE_MS,
     PARAGRAPH_SILENCE_MS,
     SENTENCE_SILENCE_MS,
     segment_chapter,
@@ -94,6 +95,28 @@ def test_year_reading(year, expected):
 )
 def test_abbreviation_expansion(normalizer, source, expected):
     assert normalizer.normalize(source) == expected
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "It was the first.",
+        "At least.",
+        "He had problems.",
+        "They flew to America.",
+        "He loved the piano.",
+        "I said no.",
+        "The canvas dried.",
+    ],
+)
+def test_abbreviations_only_match_whole_words(normalizer, sentence):
+    """Regression: "first." matched "st." and was read as "firSaint", losing
+    the full stop - and with it the sentence boundary."""
+    assert normalizer.normalize(sentence) == sentence
+
+
+def test_number_abbreviation_needs_a_number(normalizer):
+    assert normalizer.normalize("See No. 12.") == "See Number twelve."
 
 
 # --- acronyms -------------------------------------------------------------
@@ -195,6 +218,40 @@ def test_link_text_survives_url_removal(normalizer):
 
 def test_heading_gains_terminal_punctuation(normalizer):
     assert normalizer.normalize("# Departure").endswith(".")
+
+
+def test_heading_is_its_own_paragraph(normalizer):
+    """Regression: the heading pattern swallowed the blank line after it, so
+    every heading ran into its first paragraph and never got its pause."""
+    text = normalizer.normalize("# Departure\n\nThe train left at dawn and kept going.")
+    chunks = segment_chapter(text, chapter_index=1, max_chars=400)
+
+    assert chunks[0].text == "Departure."
+    assert chunks[0].trailing_silence_ms == HEADING_SILENCE_MS
+
+
+def test_heading_keeps_a_trailing_hash(normalizer):
+    assert normalizer.normalize("# Notes on C#") == "Notes on C#."
+
+
+def test_list_stays_apart_from_the_paragraph_before_it(normalizer):
+    text = normalizer.normalize("Sleep comes in cycles:\n\n- Light sleep\n- Deep sleep")
+    assert text == "Sleep comes in cycles:\n\nLight sleep.\nDeep sleep."
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("- Light sleep\n- Deep sleep", "Light sleep.\nDeep sleep."),
+        ("1. One\n2. Two", "One.\nTwo."),
+        ("- **Bold item**", "Bold item."),
+        ("- Already done.\n- Asking?", "Already done.\nAsking?"),
+        ("- apples,\n- pears", "apples,\npears."),
+        ("- A wrapped item\n  that continues", "A wrapped item\nthat continues."),
+    ],
+)
+def test_list_items_are_read_as_separate_items(normalizer, source, expected):
+    assert normalizer.normalize(source) == expected
 
 
 def test_normalizer_is_deterministic(normalizer):

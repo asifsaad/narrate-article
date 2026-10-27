@@ -48,6 +48,32 @@ Useful flags:
 | `--ocr` | For scanned PDFs (otherwise they fail loudly) |
 | `--no-cache` | Re-synthesize everything |
 
+### Short documents
+
+A note, blog post or essay wants one file, not a folder of chapters:
+
+```bash
+narrate article notes.md                     # -> out/notes.mp3
+narrate article notes.md --dry-run           # estimate + exact script, no synthesis
+narrate article post.md -o post.m4a --speed 0.9
+```
+
+At ~200 wpm, 10-20 minutes of audio is roughly 2,000-4,000 words. The dry run
+prints the estimate per section, so you can trim before rendering; past 30
+minutes the command suggests `speak --format m4b` instead.
+
+There is no checkpoint - the markdown file *is* the editable text, and
+re-running after an edit re-synthesizes only the sentences that changed.
+Sections are separated by a longer pause than paragraphs.
+
+Markdown furniture is not read aloud: front matter (its `title` and `author`
+become the tags), HTML comments and tags, code blocks, tables, math, footnotes,
+link definitions and task-list boxes. Callouts are announced ("Note."), and list
+items are read as separate items rather than one run-on phrase.
+
+For one chapter of a book, extract first and point `article` at the file:
+`narrate article work/<book>/chapters/003*.md`.
+
 ## How it works
 
 ```

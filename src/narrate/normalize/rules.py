@@ -80,28 +80,38 @@ def _roman_to_int(roman: str) -> int | None:
 
 # --- pass 1: markdown syntax ----------------------------------------------
 
+# Line-anchored patterns match horizontal whitespace only. ``\s`` also matches
+# newlines, which let a heading or list marker swallow the blank line next to
+# it and merge two paragraphs - silently losing the pause between them.
 _FENCED_CODE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
-_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*$", re.MULTILINE)
-_BLOCKQUOTE = re.compile(r"^\s*>\s?", re.MULTILINE)
-_LIST_BULLET = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
-_LIST_NUMBER = re.compile(r"^\s*\d+[.)]\s+", re.MULTILINE)
-_HRULE = re.compile(r"^\s*(?:[-*_]\s*){3,}$", re.MULTILINE)
+_HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.MULTILINE)
+_BLOCKQUOTE = re.compile(r"^[ \t]*>[ \t]?", re.MULTILINE)
+_LIST_ITEM = re.compile(r"^[ \t]*(?:>[ \t]?)*(?:[-*+]|\d+[.)])[ \t]+\S")
+_LIST_BULLET = re.compile(r"^[ \t]*[-*+][ \t]+", re.MULTILINE)
+_LIST_NUMBER = re.compile(r"^[ \t]*\d+[.)][ \t]+", re.MULTILINE)
+_HRULE = re.compile(r"^[ \t]*(?:[-*_][ \t]*){3,}$", re.MULTILINE)
 _EMPHASIS = re.compile(r"(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]+)`")
+
+#: Characters that already end a spoken phrase, so need no added full stop.
+_TERMINAL = ".!?:;,"
+#: Closing markup that can trail the last word without ending the phrase.
+_CLOSERS = "*_`\"')]’”"
 
 
 def strip_markdown(text: str) -> str:
     """Reduce markdown to plain prose.
 
-    Headings keep their text and gain a full stop so the engine gives them
-    closing intonation instead of running them into the next sentence.
+    Headings and list items keep their text and gain a full stop so the engine
+    gives them closing intonation instead of running them into the next one.
     """
     text = _FENCED_CODE.sub(" ", text)
     text = _IMAGE.sub(" ", text)
     text = _LINK.sub(r"\1", text)
     text = _HRULE.sub("\n\n", text)
+    text = _punctuate_list_items(text)
     text = _HEADING.sub(lambda m: _as_sentence(m.group(1)), text)
     text = _BLOCKQUOTE.sub("", text)
     text = _LIST_BULLET.sub("", text)
@@ -116,6 +126,39 @@ def _as_sentence(heading: str) -> str:
     if heading and heading[-1] not in ".!?:;":
         heading += "."
     return heading
+
+
+def _punctuate_list_items(text: str) -> str:
+    """End each list item with a full stop unless it already has one.
+
+    On the page, the line break is the pause between bullets. Once the markers
+    are stripped that break is gone, and "Light sleep / Deep sleep / REM sleep"
+    is read as a single run-on phrase.
+    """
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if not _LIST_ITEM.match(line):
+            continue
+        # A wrapped item continues until a blank line or the next item; the
+        # full stop belongs at its end, not after its first line.
+        end = i
+        while (
+            end + 1 < len(lines)
+            and lines[end + 1].strip()
+            and not _LIST_ITEM.match(lines[end + 1])
+            and not lines[end + 1].lstrip().startswith("#")
+        ):
+            end += 1
+        lines[end] = _terminate(lines[end])
+    return "\n".join(lines)
+
+
+def _terminate(line: str) -> str:
+    line = line.rstrip()
+    core = line.rstrip(_CLOSERS)
+    if core and core[-1] not in _TERMINAL:
+        line += "."
+    return line
 
 
 # --- pass 2: structural noise ---------------------------------------------
@@ -291,8 +334,32 @@ ABBREVIATIONS: dict[str, str] = {
     "°": "degrees",
 }
 
+#: "No." means "Number" only before one. Numbers are already words by this
+#: pass, so "No. 5" arrives as "No. five" - and "I said no." must stay as is.
+_NUMBER_AHEAD = (
+    r"(?=\s+(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|a hundred)\b)"
+)
+
+
+def _abbreviation_alternative(key: str) -> str:
+    pattern = re.escape(key)
+    # Word abbreviations must start a word. Without this, "first." matched
+    # "st." and was read as "firSaint", and "problems." as "probleMiz".
+    if key[0].isalpha():
+        pattern = rf"(?<!\w){pattern}"
+    if key[-1].isalpha():
+        pattern += r"\b"
+    if key == "No.":
+        pattern += _NUMBER_AHEAD
+    return pattern
+
+
 _ABBREV_PATTERN = re.compile(
-    "|".join(re.escape(k) for k in sorted(ABBREVIATIONS, key=len, reverse=True)),
+    "|".join(
+        _abbreviation_alternative(k) for k in sorted(ABBREVIATIONS, key=len, reverse=True)
+    ),
     re.IGNORECASE,
 )
 

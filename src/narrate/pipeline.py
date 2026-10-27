@@ -23,7 +23,7 @@ from narrate.audio import (
     format_duration,
     write_chapter,
 )
-from narrate.document import Book, Chapter
+from narrate.document import Book, Chapter, Chunk
 from narrate.ingest import ingest
 from narrate.ingest.chapterize import split_into_chapters
 from narrate.normalize import Lexicon, get_normalizer
@@ -433,24 +433,25 @@ def _select_chapters(book: Book, config: NarrationConfig) -> list[Chapter]:
     return chapters
 
 
-def _render_chapter(
-    chapter: Chapter,
+def plan_chapter(chapter: Chapter, *, engine, normalizer) -> list[Chunk]:
+    """Normalize and segment one chapter: exactly the text the engine will get.
+
+    Cheap and model-free, so it can run before synthesis to estimate length or
+    to show what will be read.
+    """
+    text = normalizer.normalize(chapter.markdown)
+    return segment_chapter(text, chapter_index=chapter.index, max_chars=engine.max_chars)
+
+
+def synthesize_chunks(
+    chunks: list[Chunk],
     *,
     engine,
-    normalizer,
     cache: AudioCache,
     config: NarrationConfig,
-    book: Book,
-    destination: Path,
-) -> ChapterResult | None:
-    text = normalizer.normalize(chapter.markdown)
-    chunks = segment_chapter(
-        text, chapter_index=chapter.index, max_chars=engine.max_chars
-    )
-    if not chunks:
-        log.warning("Chapter %d (%s) produced no speakable text", chapter.index, chapter.title)
-        return None
-
+    on_chunk: Callable[[], None] | None = None,
+):
+    """Render chunks through the cache and join them with their pauses."""
     pieces = []
     for chunk in chunks:
         audio = cache.get(
@@ -464,8 +465,28 @@ def _render_chapter(
                 chunk, audio, engine=engine.name, voice=config.voice, speed=config.speed
             )
         pieces.append((audio, chunk.trailing_silence_ms))
+        if on_chunk:
+            on_chunk()
 
-    track = concat_with_silence(pieces, sample_rate=engine.sample_rate)
+    return concat_with_silence(pieces, sample_rate=engine.sample_rate)
+
+
+def _render_chapter(
+    chapter: Chapter,
+    *,
+    engine,
+    normalizer,
+    cache: AudioCache,
+    config: NarrationConfig,
+    book: Book,
+    destination: Path,
+) -> ChapterResult | None:
+    chunks = plan_chapter(chapter, engine=engine, normalizer=normalizer)
+    if not chunks:
+        log.warning("Chapter %d (%s) produced no speakable text", chapter.index, chapter.title)
+        return None
+
+    track = synthesize_chunks(chunks, engine=engine, cache=cache, config=config)
     if track.size == 0:
         log.warning("Chapter %d rendered to silence; skipping", chapter.index)
         return None
@@ -505,5 +526,7 @@ __all__ = [
     "run",
     "load_checkpoint",
     "write_checkpoint",
+    "plan_chapter",
+    "synthesize_chunks",
     "format_duration",
 ]

@@ -8,8 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from narrate.document import Book
-from narrate.ingest.chapterize import split_into_chapters
 from narrate.ingest.docling_ingest import NoTextLayerError, ingest_with_docling
+from narrate.ingest.markdown import ingest_markdown
 
 #: Formats routed through Docling.
 DOCLING_FORMATS = frozenset({".pdf", ".epub", ".docx", ".html", ".htm", ".pptx"})
@@ -50,7 +50,7 @@ def ingest(
     suffix = path.suffix.lower()
 
     if suffix in PLAINTEXT_FORMATS:
-        return _ingest_plaintext(path, split_level=split_level)
+        return ingest_markdown(path, split_level=split_level)
 
     if suffix in DOCLING_FORMATS:
         return ingest_with_docling(
@@ -66,31 +66,3 @@ def ingest(
         f"Cannot ingest {path.name!r}. Supported formats: "
         f"{', '.join(sorted(SUPPORTED_FORMATS))}"
     )
-
-
-def _ingest_plaintext(path: Path, *, split_level: int) -> Book:
-    """Read .md/.txt directly.
-
-    Markdown tables are stripped here because there is no Docling label tree to
-    filter - this is the one place where structural exclusion has to be textual.
-    """
-    import re
-
-    text = path.read_text(encoding="utf-8", errors="replace")
-
-    # Pipe tables: a row of cells followed by a separator row.
-    text = re.sub(r"^\|.*\|[ \t]*$\n?", "", text, flags=re.MULTILINE)
-    # Images: ![alt](src) carries no narratable content.
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
-    # Fenced code blocks.
-    text = re.sub(r"^```.*?^```", "", text, flags=re.MULTILINE | re.DOTALL)
-
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-
-    title = path.stem.replace("_", " ").replace("-", " ").strip() or "Untitled"
-    heading = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
-    if heading:
-        title = heading.group(1).strip()
-
-    chapters = split_into_chapters(text, max_level=split_level, fallback_title=title)
-    return Book(title=title, chapters=chapters, source_path=path)
