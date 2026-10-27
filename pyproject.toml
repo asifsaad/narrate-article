@@ -1,0 +1,62 @@
+[project]
+name = "narrate"
+version = "0.1.0"
+description = "Convert PDF, EPUB and text documents into narrated audio using open-weights TTS"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # document ingest
+    "docling>=2.0.0",
+    "docling-core>=2.0.0",
+    "ebooklib>=0.18",          # EPUB spine fallback (see ingest/epub_ingest.py)
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    # text processing
+    "inflect>=7.0",            # MIT - cardinals/ordinals, keeps the stack permissive
+    "pysbd>=0.3.4",            # MIT - sentence boundaries, no model download
+    "pyyaml>=6.0",
+    # audio
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "mutagen>=1.47",           # ID3 tagging
+    # cli
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+# Kokoro pulls a large torch tree; keep it optional so ingest/normalize can be
+# developed and tested without it.
+#
+# Do NOT pin misaki<0.9. Older guides recommend it for an
+# EspeakWrapper.set_data_path breakage, but kokoro 0.9.4 hard-requires
+# misaki[en]>=0.9.4, so the pin makes the project unresolvable. Let kokoro
+# select its own G2P version.
+kokoro = [
+    "kokoro>=0.9.4",
+    "torch>=2.4",
+]
+
+[project.scripts]
+narrate = "narrate.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "reportlab>=4.0",          # generates the test PDF fixture
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/narrate"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

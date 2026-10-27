@@ -1,0 +1,42 @@
+# Pronunciation overrides.
+#
+# The rules in narrate/normalize/rules.py handle the general case. This file
+# handles the specific words in *your* book that no rule could guess.
+#
+# Applied last, so every entry here beats every rule.
+# Use with: narrate speak book.epub --lexicon config/lexicon.yaml
+
+# Literal replacement, case-insensitive, whole word.
+# The right-hand side is read exactly as written - spell it phonetically.
+pronounce:
+  kubectl: "cube control"
+  nginx: "engine ex"
+  PostgreSQL: "post gres cue ell"
+  Xiaomi: "shao mee"
+  Nietzsche: "nee cha"
+  Goethe: "ger ta"
+  # Numeric ranges the rules read as prose rather than a citation:
+  # "pp. 12-14": "pages twelve to fourteen"
+
+# Read letter by letter. Overrides the built-in word list, so listing NASA
+# here really does produce "N. A. S. A."
+spell_out:
+  - IRS
+  - EPA
+  - NHS
+  - IEEE
+
+# Read as a word despite being all caps. Only needed for acronyms the built-in
+# list does not already cover (NASA, NATO, SQL and friends are handled).
+say_as_word:
+  - CERN
+  - CRISPR
+  - FIFA
+
+# Removed entirely. For boilerplate that survives extraction - running heads,
+# copyright lines, publisher furniture.
+drop:
+  - "All rights reserved."
+  # Project Gutenberg books carry these through most of the text:
+  # - "Project Gutenberg"
+  # - "THE FULL PROJECT GUTENBERG LICENSE"
