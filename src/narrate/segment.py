@@ -67,10 +67,8 @@ def segment_chapter(
         return []
 
     chunks: list[Chunk] = []
-    paragraphs = [p.strip() for p in _PARAGRAPH_BREAK.split(text) if p.strip()]
 
-    for paragraph in paragraphs:
-        sentences = split_sentences(paragraph, language=language)
+    for paragraph, sentences in paragraph_sentences(text, language=language):
         packed = _pack(sentences, max_chars=max_chars)
 
         for i, body in enumerate(packed):
@@ -92,6 +90,17 @@ def segment_chapter(
         chunks[-1].trailing_silence_ms = 0
 
     return chunks
+
+
+def paragraph_sentences(text: str, *, language: str = "en") -> list[tuple[str, list[str]]]:
+    """Each paragraph of normalized ``text`` with its sentences, in order.
+
+    Exactly the split :func:`segment_chapter` packs from, so a caller can tell
+    which sentence any character of a chunk belongs to - read-along underlines
+    a whole sentence even when a long one was split across chunks at clauses.
+    """
+    paragraphs = [p.strip() for p in _PARAGRAPH_BREAK.split(text) if p.strip()]
+    return [(paragraph, split_sentences(paragraph, language=language)) for paragraph in paragraphs]
 
 
 def _paragraph_gap(paragraph: str) -> int:

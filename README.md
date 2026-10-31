@@ -102,32 +102,73 @@ ingest -> chapterize -> normalize -> segment -> synthesize -> assemble
 
 ## Read-along (in progress)
 
-A `narrate read` command is being built. It will write audio plus a
-self-contained page that highlights each word as it is spoken. The command
-**does not exist yet**. The plan, the findings, and a log of each phase are
-in [`docs/read-along/PLAN.md`](docs/read-along/PLAN.md).
+Listen to a note while the page highlights each word as it is spoken:
 
-What is in place so far:
+```bash
+narrate read notes.md --open                 # -> out/notes/index.html
+narrate read notes.md --voice bf_emma --speed 0.9
+```
 
-- **Word timings from Kokoro.** `KokoroEngine.synthesize_with_timings()`
-  returns the same audio as `synthesize()`, plus the start and end of every
-  token. The times are recomputed from Kokoro's duration predictor
-  (`times_from_durations`), which avoids an off-by-one in upstream's
-  `join_timestamps` after symbols such as `~` or `★`. Engines that cannot
-  report timings get an estimate from `tts/timing_estimate.py`.
-- **Timings in the cache.** Every newly rendered chunk, including from
-  `speak` and `article`, stores its timings next to its audio, so a later
-  read-along run reuses it. Audio cached before this change is still reused
-  by `speak` and `article`. Read-along re-renders such a chunk once, because
-  it has no timings.
-- **A timestamp spike** you can run to see the timings on real audio:
+`out/notes/` holds three files:
 
-  ```bash
-  uv run --extra kokoro python scripts/spike_kokoro_timestamps.py
-  open out/spike/index.html
-  ```
+| File | Contents |
+|---|---|
+| `notes.m4a` | The narration, encoded at the engine's 24 kHz |
+| `notes.timings.json` | The text, its blocks and sentences, and when each word is spoken |
+| `index.html` | A self-contained player: no network, works opened straight from disk |
 
-  `--g2p-only` shows Kokoro's tokens without needing the model weights.
+On the page, the current word is highlighted and its sentence underlined, and
+the page scrolls to keep up. It stops following for a few seconds if you
+scroll yourself.
+
+| Control | Effect |
+|---|---|
+| Click a word | Jump there |
+| Space | Play / pause |
+| ← / → | Previous / next sentence |
+| Shift+← / Shift+→ | Previous / next paragraph |
+
+The page follows your system's light or dark theme and works at phone width.
+
+Useful flags:
+
+| Flag | Effect |
+|---|---|
+| `--format mp3` | mp3 instead of m4a. Some browsers ignore mp3's encoder delay, so the highlight may run slightly early |
+| `--embed-audio` | Put the audio inside `index.html`, giving one file to share (slow to open above ~20 MB) |
+| `--open` | Open the page when done |
+| `--keep-citations`, `--lexicon`, `--no-loudnorm`, `--no-cache` | As for `article` |
+
+`read` and `article` share their chunk cache. Narrating a file one way and
+then the other synthesizes nothing new, and after an edit only the changed
+sentences are re-rendered.
+
+How the timings work:
+- **Where they come from.** Kokoro reports when each token is spoken, from its
+  duration predictor, on the same model call that produces the audio. Engines
+  that cannot report timings get an estimate (`tts/timing_estimate.py`).
+- **Placing words.** Words are placed by counting samples through every chunk
+  and pause, never by measuring the encoded file.
+- **Checking the encode.** After encoding, the file is decoded back and
+  checked for its length, its sample rate and any start delay.
+
+Current limits:
+- **Inputs:** Markdown and text files only for now. PDF, EPUB, DOCX, HTML and
+  PPTX come later.
+- **Rewritten text:** a word the normalizer rewrote (`$4.2M` → "four point
+  two million dollars", `Dr.`, `FBI`) shares one highlight with its spoken
+  words. Several rewrites in a row (`1939-1945, e.g.`) currently share one
+  coarse highlight; exact mapping is the next step.
+- **Player features still to come:** step-by-sentence/paragraph modes, a
+  speed control, "resume where you left off", and a chapter sidebar.
+
+The plan, the findings and a log of each phase are in
+[`docs/read-along/PLAN.md`](docs/read-along/PLAN.md). To see Kokoro's raw
+timestamps for a paragraph:
+
+```bash
+uv run --extra kokoro python scripts/spike_kokoro_timestamps.py
+```
 
 ## Model choices
 
@@ -206,9 +247,10 @@ a figure caption. The suite asserts the first survives and the other two do
 not.
 
 Synthesis is faked with deterministic stub engines (`tests/stub_engine.py`),
-so the suite needs no model weights. A few tests marked `kokoro` render real
-audio; they run offline and skip unless Kokoro-82M is already in the local
-Hugging Face cache:
+so the suite needs no model weights. One read-along test plays a generated page
+in headless Chromium through Node.js and Playwright, and skips if they are not
+installed. A few tests marked `kokoro` render real audio; they run offline and
+skip unless Kokoro-82M is already in the local Hugging Face cache:
 
 ```bash
 uv run --group dev --extra kokoro pytest tests/ -m kokoro -v

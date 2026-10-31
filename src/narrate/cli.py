@@ -344,6 +344,112 @@ def article_command(
         console.print(f"  Speed: {result.duration_seconds / result.elapsed_seconds:.1f}x realtime")
 
 
+@app.command("read")
+def read_command(
+    source: Path = typer.Argument(..., exists=True, dir_okay=False, help="Markdown or text file"),
+    voice: str = typer.Option("af_heart", "--voice", help="Voice id (see `narrate voices`)"),
+    speed: float = typer.Option(1.0, "--speed", min=0.5, max=2.0),
+    engine: str = typer.Option("kokoro", "--engine"),
+    audio_format: str = typer.Option(
+        "m4a", "--format", help="m4a (default; most reliable sync in browsers) or mp3"
+    ),
+    bitrate: str = typer.Option("128k", "--bitrate"),
+    embed_audio: bool = typer.Option(
+        False, "--embed-audio", help="Put the audio inside index.html (one file to share)"
+    ),
+    open_page: bool = typer.Option(False, "--open", help="Open the page when done"),
+    keep_citations: bool = typer.Option(False, "--keep-citations"),
+    no_loudnorm: bool = typer.Option(False, "--no-loudnorm", help="Skip loudness normalization"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Re-synthesize everything"),
+    lexicon: Path = typer.Option(None, "--lexicon", help="Pronunciation overrides YAML"),
+    work_dir: Path = typer.Option(Path("work"), "--work-dir"),
+    output_dir: Path = typer.Option(Path("out"), "--output-dir"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Narrate a file into audio plus a page that highlights each word as it is spoken."""
+    from narrate.article import load_article, plan_article
+    from narrate.readalong.render import readalong_paths, render_readalong
+
+    _configure_logging(verbose)
+
+    audio_format = audio_format.lower()
+    paths = _guard(
+        lambda: readalong_paths(source, output_dir=output_dir, audio_format=audio_format)
+    )
+    if audio_format == "mp3":
+        console.print(
+            "[yellow]Note:[/yellow] mp3 has an encoder delay that some browsers do not "
+            "compensate for, so the highlight may run slightly early. m4a is exact."
+        )
+
+    config = NarrationConfig(
+        engine=engine,
+        voice=voice,
+        speed=speed,
+        audio_format=audio_format,
+        bitrate=bitrate,
+        normalize_loudness=not no_loudnorm,
+        keep_citations=keep_citations,
+        lexicon_path=lexicon,
+        work_dir=work_dir,
+        output_dir=output_dir,
+        use_cache=not no_cache,
+    )
+
+    book = _guard(lambda: load_article(source))
+    plan = _guard(lambda: plan_article(book, config))
+    if not plan.sections:
+        console.print(
+            f"[red]Nothing to narrate in {source.name}.[/red] After removing front matter, "
+            f"code, tables and other furniture, no speakable text is left."
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold]{book.title}[/bold] — {plan.word_count:,} words, "
+        f"≈{format_duration(plan.estimated_seconds())}, voice [cyan]{voice}[/cyan]"
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress_bar:
+        task = progress_bar.add_task("Synthesizing", total=plan.chunk_count)
+        result = _guard(
+            lambda: render_readalong(
+                plan,
+                config,
+                paths=paths,
+                embed_audio=embed_audio,
+                on_chunk=lambda: progress_bar.advance(task),
+            )
+        )
+        progress_bar.update(task, description="Done")
+
+    for warning in result.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    console.print()
+    console.print(f"[green]✓[/green] [cyan]{result.paths.page}[/cyan]")
+    console.print(f"  Audio:   {result.paths.audio.name} ({format_duration(result.duration_seconds)})")
+    console.print(f"  Timings: {result.paths.timings.name} ({result.stats.words:,} words)")
+    console.print(f"  Took:    {format_duration(result.elapsed_seconds)} ({result.cache_summary})")
+    if result.stats.shared_display_spans:
+        console.print(
+            f"  [dim]{result.stats.shared_display_spans} spoken words share a highlight with "
+            f"their neighbours (numbers, abbreviations).[/dim]"
+        )
+
+    if open_page:
+        import webbrowser
+
+        webbrowser.open(result.paths.page.resolve().as_uri())
+
+
 def _guard(action):
     """Turn expected failures into clean messages instead of tracebacks."""
     from narrate.ingest import NoTextLayerError, UnsupportedFormatError

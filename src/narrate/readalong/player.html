@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="narrate read">
+<title>{{TITLE}}</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1f1f1c; --muted: #6a6862; --rule: #e4e1d8;
+    --hi-bg: #ffe9a3; --hi-edge: #8a6500; --sentence: #b98d1c;
+    --bar-bg: rgba(251, 250, 247, 0.96); --button: #ece8dd; --button-hover: #e0dbcd;
+    --focus: #1b5fd1; --progress: #b98d1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --fg: #e9e7e1; --muted: #a09d94; --rule: #2e2e33;
+      --hi-bg: #5a4500; --hi-edge: #ffd24a; --sentence: #d9aa2b;
+      --bar-bg: rgba(23, 23, 26, 0.96); --button: #2a2a30; --button-hover: #35353c;
+      --focus: #7fb0ff; --progress: #d9aa2b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-bottom: 6rem; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 1.125rem/1.75 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { max-width: 70ch; margin: 0 auto; padding: 2rem 16px 8rem; }
+  h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 1.6em 0 0.6em; }
+  h1 { font-size: 1.9rem; } h2 { font-size: 1.45rem; } h3 { font-size: 1.2rem; }
+  h4, h5, h6 { font-size: 1.05rem; }
+  p, li, blockquote { margin: 0 0 1em; }
+  ul, ol { padding-left: 1.4em; margin: 0 0 1em; }
+  li { margin-bottom: 0.35em; }
+  blockquote { border-left: 3px solid var(--rule); padding-left: 1em; color: var(--muted); }
+  .w { cursor: pointer; border-radius: 3px; border-bottom: 2px solid transparent;
+       transition: background-color 80ms linear; }
+  .w:hover { background: var(--button); }
+  .w.current { background: var(--hi-bg); border-bottom-color: var(--hi-edge); }
+  .s.current-sentence { text-decoration: underline; text-decoration-color: var(--sentence);
+                        text-decoration-thickness: 2px; text-underline-offset: 0.3em; }
+  #banner { display: none; margin: 0 0 1.5rem; padding: 0.75rem 1rem; border-radius: 6px;
+            background: var(--button); color: var(--fg); font-size: 0.95rem; }
+  #banner.show { display: block; }
+  .bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    background: var(--bar-bg); border-top: 1px solid var(--rule);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .bar-inner { max-width: 70ch; margin: 0 auto; padding: 0.4rem 16px 0.6rem; }
+  .progress { position: relative; height: 18px; cursor: pointer; touch-action: none; }
+  .progress::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 3px;
+                      background: var(--rule); border-radius: 2px; }
+  .progress .fill { position: absolute; left: 0; top: 8px; height: 3px; width: 0;
+                    background: var(--progress); border-radius: 2px; }
+  .controls { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 0.95rem; color: var(--fg); background: var(--button);
+    border: 0; border-radius: 6px; padding: 0.35rem 0.7rem; min-height: 2.25rem; cursor: pointer;
+  }
+  button:hover { background: var(--button-hover); }
+  button:focus-visible, .progress:focus-visible, .w:focus-visible {
+    outline: 3px solid var(--focus); outline-offset: 2px;
+  }
+  #play { min-width: 5.5rem; font-weight: 600; }
+  .time { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted);
+          font-size: 0.9rem; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  @media (prefers-reduced-motion: reduce) { .w { transition: none; } }
+</style>
+</head>
+<body>
+<main id="doc">
+  <div id="banner" role="status"></div>
+  <noscript><p>This page needs JavaScript to show the text and follow the audio.</p></noscript>
+  <article id="text" aria-label="Document text"></article>
+</main>
+<div class="bar">
+  <div class="bar-inner">
+    <div class="progress" id="progress" role="slider" tabindex="0" aria-label="Position"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="fill" id="fill"></div></div>
+    <div class="controls">
+      <button id="prev" type="button" aria-label="Previous sentence" title="Previous sentence (←)">‹ Sentence</button>
+      <button id="play" type="button" aria-label="Play" title="Play / pause (Space)">▶ Play</button>
+      <button id="next" type="button" aria-label="Next sentence" title="Next sentence (→)">Sentence ›</button>
+      <span class="time" id="time" aria-live="off">0:00 / 0:00</span>
+    </div>
+  </div>
+</div>
+<audio id="audio" preload="auto" src="{{AUDIO_SRC}}"></audio>
+<script id="timings" type="application/json">{{TIMINGS}}</script>
+<script>
+"use strict";
+(() => {
+  const D = JSON.parse(document.getElementById("timings").textContent);
+  const audio = document.getElementById("audio");
+  const article = document.getElementById("text");
+  const banner = document.getElementById("banner");
+  const playButton = document.getElementById("play");
+  const fill = document.getElementById("fill");
+  const progress = document.getElementById("progress");
+  const timeLabel = document.getElementById("time");
+  const text = D.display_text;
+  const words = D.words, sentences = D.sentences, blocks = D.blocks;
+  const offset = D.audio_offset_s || 0;
+  const n = words.length;
+
+  // Long pauses clear the highlight; shorter ones keep the last word lit.
+  const LONG_GAP_S = 1.0;
+  const MANUAL_SCROLL_PAUSE_MS = 4000;
+
+  // --- model ------------------------------------------------------------
+
+  const hidden = new Uint8Array(text.length);
+  for (const [a, b] of D.markup) hidden.fill(1, a, b);
+
+  const starts = Float64Array.from(words, (w) => w.start);
+  const ends = Float64Array.from(words, (w) => w.end);
+  const wordBlock = Int32Array.from(words, (w) => sentences[w.sentence].block);
+
+  // Adjacent words with the same display span are one highlight unit: the
+  // five spoken words of "$4.2M", the three letters of "F. B. I.".
+  const units = [];
+  const unitOf = new Int32Array(n);
+  words.forEach((w, i) => {
+    const last = units[units.length - 1];
+    if (last && last.a === w.src[0] && last.b === w.src[1] && last.lastWord === i - 1) {
+      last.lastWord = i;
+    } else {
+      units.push({ a: w.src[0], b: w.src[1], firstWord: i, lastWord: i, el: null });
+    }
+    unitOf[i] = units.length - 1;
+  });
+
+  // Units in reading order, without overlaps; an overlapping unit keeps no
+  // element and simply never lights up.
+  const placed = units.map((u, i) => i).sort((x, y) => units[x].a - units[y].a || x - y);
+  const renderable = [];
+  let reach = 0;
+  for (const i of placed) {
+    if (units[i].a >= reach) { renderable.push(i); reach = units[i].b; }
+  }
+
+  // --- rendering --------------------------------------------------------
+
+  function visibleText(a, b) {
+    let out = "";
+    for (let i = a; i < b; i++) if (!hidden[i]) out += text[i] === "\n" ? " " : text[i];
+    return out;
+  }
+
+  let cursorUnit = 0;
+  function renderInline(parent, a, b) {
+    let pos = a;
+    while (cursorUnit < renderable.length && units[renderable[cursorUnit]].a < a) cursorUnit++;
+    while (cursorUnit < renderable.length) {
+      const index = renderable[cursorUnit];
+      const unit = units[index];
+      if (unit.a >= b) break;
+      if (unit.a > pos) parent.append(visibleText(pos, unit.a));
+      const label = visibleText(unit.a, Math.min(unit.b, b));
+      if (label) {
+        const span = document.createElement("span");
+        span.className = "w";
+        span.dataset.u = String(index);
+        span.textContent = label;
+        parent.append(span);
+        unit.el = span;
+      }
+      pos = Math.min(unit.b, b);
+      cursorUnit++;
+    }
+    if (pos < b) parent.append(visibleText(pos, b));
+  }
+
+  // A sentence boundary inside a unit moves to the unit's end.
+  function snap(position) {
+    for (const i of renderable) {
+      const u = units[i];
+      if (u.a < position && position < u.b) return u.b;
+      if (u.a >= position) break;
+    }
+    return position;
+  }
+
+  const sentenceEls = sentences.map(() => []);
+  const sentenceOrder = sentences.map((s, i) => i).sort((x, y) => sentences[x].src[0] - sentences[y].src[0]);
+  const blockEls = [];
+  let list = null;
+
+  for (const block of blocks) {
+    let el;
+    if (block.kind === "heading") {
+      el = document.createElement("h" + Math.min(Math.max(block.level || 2, 1), 6));
+      list = null;
+    } else if (block.kind === "list_item") {
+      const ordered = block.number !== undefined && block.number !== null;
+      if (!list || list.ordered !== ordered) {
+        list = { ordered, el: document.createElement(ordered ? "ol" : "ul") };
+        if (ordered && block.number !== 1) list.el.start = block.number;
+        article.append(list.el);
+      }
+      el = document.createElement("li");
+    } else if (block.kind === "quote") {
+      el = document.createElement("blockquote");
+      list = null;
+    } else {
+      el = document.createElement("p");
+      list = null;
+    }
+    el.dataset.b = String(block.id);
+    blockEls[block.id] = el;
+
+    const [a, b] = block.src;
+    let pos = a;
+    for (const sid of sentenceOrder) {
+      const s = sentences[sid];
+      if (s.src[1] <= pos || s.src[0] >= b) continue;
+      const from = Math.max(pos, s.src[0]);
+      const to = Math.min(b, snap(Math.min(b, s.src[1])));
+      if (to <= from) continue;
+      if (from > pos) renderInline(el, pos, from);
+      const span = document.createElement("span");
+      span.className = "s";
+      span.dataset.s = String(sid);
+      renderInline(span, from, to);
+      el.append(span);
+      sentenceEls[sid].push(span);
+      pos = to;
+    }
+    if (pos < b) renderInline(el, pos, b);
+    if (!el.textContent.trim()) continue;
+    if (block.kind === "list_item") list.el.append(el); else article.append(el);
+  }
+  document.title = D.title || document.title;
+
+  // --- sync -------------------------------------------------------------
+
+  function lastStartedWord(t) {
+    let lo = 0, hi = n - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] <= t) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return best;
+  }
+
+  function activeWord(t) {
+    const i = lastStartedWord(t);
+    if (i < 0) return -1;
+    if (t < ends[i]) return i;
+    if (i + 1 >= n) return -1;
+    if (starts[i + 1] - ends[i] > LONG_GAP_S) return -1;
+    // The pause after a heading is the heading's, not its last word's.
+    if (blocks[wordBlock[i]].kind === "heading" && wordBlock[i + 1] !== wordBlock[i]) return -1;
+    return i;
+  }
+
+  let currentUnit = -1, currentSentence = -1;
+  function show(t) {
+    const w = activeWord(t);
+    const unit = w < 0 ? -1 : unitOf[w];
+    const sentence = w < 0 ? -1 : words[w].sentence;
+    if (unit !== currentUnit) {
+      if (currentUnit >= 0 && units[currentUnit].el) units[currentUnit].el.classList.remove("current");
+      if (unit >= 0 && units[unit].el) units[unit].el.classList.add("current");
+      currentUnit = unit;
+      document.body.dataset.unit = String(unit);
+    }
+    if (sentence !== currentSentence) {
+      if (currentSentence >= 0) sentenceEls[currentSentence].forEach((el) => el.classList.remove("current-sentence"));
+      if (sentence >= 0) sentenceEls[sentence].forEach((el) => el.classList.add("current-sentence"));
+      currentSentence = sentence;
+      document.body.dataset.sentence = String(sentence);
+      if (sentence >= 0) follow(sentenceEls[sentence][0] || (unit >= 0 && units[unit].el));
+    }
+  }
+
+  function now() { return audio.currentTime - offset; }
+
+  function clock(seconds) {
+    const s = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${r}` : `${m}:${r}`;
+  }
+
+  function duration() {
+    return Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : D.duration_s;
+  }
+
+  function paintBar() {
+    const total = duration();
+    const share = total ? Math.min(1, audio.currentTime / total) : 0;
+    fill.style.width = (share * 100).toFixed(2) + "%";
+    progress.setAttribute("aria-valuenow", String(Math.round(share * 100)));
+    progress.setAttribute("aria-valuetext", `${clock(audio.currentTime)} of ${clock(total)}`);
+    timeLabel.textContent = `${clock(audio.currentTime)} / ${clock(total)}`;
+  }
+
+  function frame() {
+    show(now());
+    paintBar();
+    if (!audio.paused && !audio.ended) requestAnimationFrame(frame);
+  }
+
+  // --- scrolling --------------------------------------------------------
+
+  let manualUntil = 0, programmaticUntil = 0;
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function follow(el) {
+    if (!el || Date.now() < manualUntil) return;
+    const rect = el.getBoundingClientRect();
+    const view = window.innerHeight;
+    if (rect.top >= view * 0.15 && rect.bottom <= view * 0.7) return;
+    programmaticUntil = Date.now() + 1000;
+    window.scrollTo({ top: window.scrollY + rect.top - view / 3, behavior: reduceMotion ? "auto" : "smooth" });
+  }
+
+  function manualScroll() { manualUntil = Date.now() + MANUAL_SCROLL_PAUSE_MS; }
+  window.addEventListener("wheel", manualScroll, { passive: true });
+  window.addEventListener("touchmove", manualScroll, { passive: true });
+  window.addEventListener("scroll", () => { if (Date.now() > programmaticUntil) manualScroll(); }, { passive: true });
+
+  // --- controls ---------------------------------------------------------
+
+  function seek(t) {
+    audio.currentTime = Math.max(0, t + offset + 0.001);
+    manualUntil = 0;
+    show(Math.max(0, t + 0.001));
+    paintBar();
+  }
+
+  function currentSentenceIndex(t) {
+    let found = -1;
+    for (let i = 0; i < sentences.length && sentences[i].start <= t + 1e-6; i++) found = i;
+    return found;
+  }
+
+  function stepSentence(direction) {
+    const t = now();
+    const i = currentSentenceIndex(t);
+    if (direction > 0) {
+      if (i + 1 < sentences.length) seek(sentences[i + 1].start);
+    } else if (i >= 0) {
+      seek(t - sentences[i].start > 1 || i === 0 ? sentences[i].start : sentences[i - 1].start);
+    }
+  }
+
+  // Blocks that are spoken, with the time their first sentence starts.
+  const blockStarts = [];
+  sentences.forEach((s) => {
+    if (!blockStarts.length || blockStarts[blockStarts.length - 1].block !== s.block) {
+      blockStarts.push({ block: s.block, start: s.start });
+    }
+  });
+
+  function stepBlock(direction) {
+    const t = now();
+    let i = -1;
+    for (let k = 0; k < blockStarts.length && blockStarts[k].start <= t + 1e-6; k++) i = k;
+    if (direction > 0) {
+      if (i + 1 < blockStarts.length) seek(blockStarts[i + 1].start);
+    } else if (i >= 0) {
+      seek(t - blockStarts[i].start > 1 || i === 0 ? blockStarts[i].start : blockStarts[i - 1].start);
+    }
+  }
+
+  function toggle() {
+    if (audio.paused) {
+      const playing = audio.play();
+      if (playing && playing.catch) playing.catch((error) => notice(`Playback did not start: ${error.message}`));
+    } else {
+      audio.pause();
+    }
+  }
+
+  function notice(message) {
+    banner.textContent = message;
+    banner.classList.add("show");
+  }
+
+  // A mouse click leaves focus on the button, where Space would activate it
+  // again; drop focus so Space keeps meaning play/pause. Keyboard users keep it.
+  function onPress(button, action) {
+    button.addEventListener("click", (event) => {
+      action();
+      if (event.detail > 0) button.blur();
+    });
+  }
+  onPress(playButton, toggle);
+  onPress(document.getElementById("prev"), () => stepSentence(-1));
+  onPress(document.getElementById("next"), () => stepSentence(1));
+
+  article.addEventListener("click", (event) => {
+    const span = event.target.closest(".w");
+    if (!span) return;
+    seek(starts[units[Number(span.dataset.u)].firstWord]);
+  });
+
+  function seekToPointer(event) {
+    const rect = progress.getBoundingClientRect();
+    const share = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    seek(share * duration() - offset);
+  }
+  progress.addEventListener("pointerdown", (event) => {
+    seekToPointer(event);
+    progress.setPointerCapture(event.pointerId);
+  });
+  progress.addEventListener("pointermove", (event) => {
+    if (progress.hasPointerCapture(event.pointerId)) seekToPointer(event);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const tag = event.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (event.key === " " || event.code === "Space") {
+      if (tag === "BUTTON") return; // the button handles its own activation
+      event.preventDefault();
+      toggle();
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      event.shiftKey ? stepBlock(1) : stepSentence(1);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      event.shiftKey ? stepBlock(-1) : stepSentence(-1);
+    } else if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      manualScroll();
+    }
+  });
+
+  audio.addEventListener("play", () => {
+    playButton.textContent = "❚❚ Pause";
+    playButton.setAttribute("aria-label", "Pause");
+    requestAnimationFrame(frame);
+  });
+  audio.addEventListener("pause", () => {
+    playButton.textContent = "▶ Play";
+    playButton.setAttribute("aria-label", "Play");
+    frame();
+  });
+  audio.addEventListener("seeked", frame);
+  audio.addEventListener("loadedmetadata", paintBar);
+  audio.addEventListener("error", () => {
+    notice(`The audio file (${D.audio}) could not be loaded. Keep this page in the same folder as it.`);
+  });
+
+  paintBar();
+  window.narrateReadAlong = { data: D, units, seek, activeWord };
+})();
+</script>
+</body>
+</html>

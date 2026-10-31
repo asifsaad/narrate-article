@@ -32,6 +32,15 @@ def require_ffmpeg() -> str:
     return path
 
 
+def silence_samples(milliseconds: int, *, sample_rate: int) -> int:
+    """Length of a generated pause, in samples.
+
+    The single definition of pause arithmetic: assembly uses it to insert
+    silence and read-along uses it to place words, so the two cannot drift.
+    """
+    return int(sample_rate * milliseconds / 1000) if milliseconds > 0 else 0
+
+
 def concat_with_silence(
     pieces: list[tuple[np.ndarray, int]], *, sample_rate: int
 ) -> np.ndarray:
@@ -49,7 +58,8 @@ def concat_with_silence(
         if audio.size:
             out.append(np.asarray(audio, dtype=np.float32).reshape(-1))
         if silence_ms > 0:
-            out.append(np.zeros(int(sample_rate * silence_ms / 1000), dtype=np.float32))
+            samples = silence_samples(silence_ms, sample_rate=sample_rate)
+            out.append(np.zeros(samples, dtype=np.float32))
 
     if not out:
         return np.zeros(0, dtype=np.float32)
@@ -65,12 +75,18 @@ def write_chapter(
     bitrate: str = "128k",
     normalize_loudness: bool = True,
     tags: dict[str, str] | None = None,
+    output_sample_rate: int | None = None,
 ) -> Path:
     """Encode one chapter and tag it.
 
     The WAV intermediate is written first because piping raw samples through
     ffmpeg's stdin makes failures much harder to diagnose, and the file is
     removed immediately afterwards.
+
+    ``output_sample_rate`` pins the encoded rate. Without it, ``loudnorm``'s
+    internal 192 kHz resampling leaks into the output (96 kHz AAC, 48 kHz
+    mp3). Read-along passes the engine's rate so the encoded timeline is the
+    synthesized one; existing commands pass nothing and are unchanged.
     """
     import soundfile as sf
 
@@ -94,6 +110,7 @@ def write_chapter(
                 audio_format=audio_format,
                 bitrate=bitrate,
                 normalize_loudness=normalize_loudness,
+                output_sample_rate=output_sample_rate,
             )
     finally:
         staging.unlink(missing_ok=True)
@@ -124,6 +141,7 @@ def _encode(
     audio_format: str,
     bitrate: str,
     normalize_loudness: bool,
+    output_sample_rate: int | None = None,
 ) -> None:
     ffmpeg = require_ffmpeg()
 
@@ -136,6 +154,9 @@ def _encode(
             "-af",
             f"loudnorm=I={TARGET_LUFS}:TP={TARGET_TRUE_PEAK}:LRA={TARGET_LRA}",
         ]
+
+    if output_sample_rate is not None:
+        command += ["-ar", str(output_sample_rate)]
 
     if audio_format == "mp3":
         command += ["-codec:a", "libmp3lame", "-b:a", bitrate]

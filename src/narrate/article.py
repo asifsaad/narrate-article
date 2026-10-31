@@ -18,11 +18,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from narrate.audio import concat_with_silence, write_chapter
+import numpy as np
+
+from narrate.audio import concat_with_silence, silence_samples, write_chapter
 from narrate.document import Book, Chapter, Chunk, slugify
 from narrate.ingest import PLAINTEXT_FORMATS
 from narrate.ingest.markdown import ingest_markdown
-from narrate.normalize import Lexicon, get_normalizer
+from narrate.normalize import Lexicon, Normalizer, get_normalizer
 from narrate.pipeline import NarrationConfig, _lang_code_for, plan_chapter, synthesize_chunks
 from narrate.tts import AudioCache, get_engine
 
@@ -153,10 +155,7 @@ def plan_article(book: Book, config: NarrationConfig, *, engine=None) -> Article
     machine where the engine is not even installed.
     """
     engine = engine or get_engine(config.engine, lang_code=_lang_code_for(config))
-    normalizer = get_normalizer(
-        lexicon=Lexicon.load(config.lexicon_path),
-        keep_citations=config.keep_citations,
-    )
+    normalizer = build_normalizer(config)
 
     sections = []
     for chapter in book.narratable_chapters():
@@ -180,11 +179,7 @@ def render_article(
 
     started = time.time()
     engine = plan.engine
-    cache = AudioCache(
-        Path(config.work_dir) / _work_name(plan.book) / "cache",
-        sample_rate=engine.sample_rate,
-        enabled=config.use_cache,
-    )
+    cache = article_cache(plan.book, config, sample_rate=engine.sample_rate)
 
     tracks = [
         synthesize_chunks(
@@ -192,14 +187,9 @@ def render_article(
         )
         for section in plan.sections
     ]
-    # The segmenter leaves no silence after a section's last chunk, so the
-    # section break is added here - and not after the final one, where it
-    # would be dead air.
-    pieces = [(track, SECTION_SILENCE_MS) for track in tracks if track.size]
-    if not pieces:
+    audio = join_sections(tracks, sample_rate=engine.sample_rate)
+    if not audio.size:
         raise ValueError(f"{plan.book.title}: rendered to silence")
-    pieces[-1] = (pieces[-1][0], 0)
-    audio = concat_with_silence(pieces, sample_rate=engine.sample_rate)
 
     write_chapter(
         audio,
@@ -208,12 +198,7 @@ def render_article(
         audio_format=config.audio_format,
         bitrate=config.bitrate,
         normalize_loudness=config.normalize_loudness,
-        tags={
-            "title": plan.book.title,
-            "album": plan.book.title,
-            "artist": plan.book.author or "Unknown",
-            "genre": "Speech",
-        },
+        tags=article_tags(plan.book),
     )
 
     return ArticleResult(
@@ -222,6 +207,65 @@ def render_article(
         elapsed_seconds=time.time() - started,
         cache_summary=cache.summary(),
     )
+
+
+def build_normalizer(config: NarrationConfig) -> Normalizer:
+    """The normalizer every short-document command uses, from one config."""
+    return get_normalizer(
+        lexicon=Lexicon.load(config.lexicon_path),
+        keep_citations=config.keep_citations,
+    )
+
+
+def article_cache(book: Book, config: NarrationConfig, *, sample_rate: int) -> AudioCache:
+    """The chunk cache for one source file, shared by ``article`` and ``read``."""
+    return AudioCache(
+        Path(config.work_dir) / _work_name(book) / "cache",
+        sample_rate=sample_rate,
+        enabled=config.use_cache,
+    )
+
+
+def section_starts(track_sizes: list[int], *, sample_rate: int) -> list[int | None]:
+    """Sample at which each section begins in :func:`join_sections`'s output.
+
+    Takes the section tracks' lengths in samples. ``None`` for a section that
+    rendered to nothing and is left out. Kept next to ``join_sections``
+    because the two must agree to the sample: read-along places every word
+    with it.
+    """
+    starts: list[int | None] = []
+    cursor = 0
+    for size in track_sizes:
+        if not size:
+            starts.append(None)
+            continue
+        starts.append(cursor)
+        cursor += size + silence_samples(SECTION_SILENCE_MS, sample_rate=sample_rate)
+    return starts
+
+
+def join_sections(tracks: list[np.ndarray], *, sample_rate: int) -> np.ndarray:
+    """Join section tracks with a section pause between them.
+
+    The segmenter leaves no silence after a section's last chunk, so the
+    section break is added here - and not after the final one, where it would
+    be dead air. Empty tracks are skipped along with their pause.
+    """
+    pieces = [(track, SECTION_SILENCE_MS) for track in tracks if track.size]
+    if not pieces:
+        return np.zeros(0, dtype=np.float32)
+    pieces[-1] = (pieces[-1][0], 0)
+    return concat_with_silence(pieces, sample_rate=sample_rate)
+
+
+def article_tags(book: Book) -> dict[str, str]:
+    return {
+        "title": book.title,
+        "album": book.title,
+        "artist": book.author or "Unknown",
+        "genre": "Speech",
+    }
 
 
 def _work_name(book: Book) -> str:
@@ -240,8 +284,13 @@ __all__ = [
     "ArticlePlan",
     "ArticleResult",
     "Section",
+    "article_cache",
+    "article_tags",
+    "build_normalizer",
+    "join_sections",
     "load_article",
     "plan_article",
     "render_article",
     "resolve_output",
+    "section_starts",
 ]

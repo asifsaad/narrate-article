@@ -12,37 +12,61 @@ task brief, the design, and a log entry per phase.
 |---|---|
 | 0 — read the code, baseline, this plan | done |
 | 1 — Kokoro timestamp spike | done; real-audio accuracy numbers still pending (needs weights) |
-| 2 — engine timings + cache sidecars | **done** |
-| 3 — timeline + player for Markdown/text | next |
-| 4 — normalizer receipts | not started |
+| 2 — engine timings + cache sidecars | done |
+| 3 — timeline + player for Markdown/text | **done** (verified with stub audio in headless Chromium; not yet with real Kokoro) |
+| 4 — normalizer receipts | next |
 | 5 — polish, all inputs, README section | not started |
 | 6 — live mode | design only, needs a go-ahead |
 
-`narrate read` does not exist yet. What exists so far:
+**`narrate read notes.md`** now writes `out/notes/notes.m4a`,
+`notes.timings.json` and `index.html`. It supports `.md`, `.markdown`, `.txt`
+and `.text` files. What exists:
 
-- **Engine contract** (`tts/base.py`): `WordTiming`, `SynthesisResult`, the
-  optional `TimedSynthesisEngine` protocol, and the
-  `synthesize_with_timings(engine, text, ...)` helper. The helper returns
-  `words=None` for engines that only implement `synthesize`.
-- **Kokoro** (`tts/kokoro_engine.py`): `synthesize_with_timings()` returns the
-  same samples as `synthesize()`, plus a timing for every token, punctuation
-  included. The times are recomputed from the model's predicted durations
-  (`times_from_durations`), not taken from Kokoro's own timestamps.
-- **Estimator** (`tts/timing_estimate.py`): `estimate_word_timings()` and
-  `with_estimated_timings()`, for engines without timings.
-- **Cache** (`tts/cache.py`): a `<key>.timings.json` sidecar next to each
-  `<key>.wav`, written by `put_result()` and read by `get_with_timings()`. The
-  plain `get()` is unchanged.
-- **Pipeline** (`pipeline.py`): `synthesize_chunks` (used by `speak` and
-  `article`) now stores timings with every new render. The new
-  `synthesize_chunk_with_timings()` is the strict timed path that read-along
-  will use.
-- **Tests**: `tests/stub_engine.py` (deterministic timed and untimed stub
-  engines) and `tests/test_timings.py` (47 tests, plus 3 real-Kokoro tests
-  that skip without weights).
+- **Command** (`cli.py`): `narrate read` with `--voice`, `--speed`, `--format
+  {m4a,mp3}`, `--embed-audio`, `--open`, `--output-dir`, `--work-dir`,
+  `--keep-citations`, `--lexicon`, `--no-loudnorm`, `--no-cache`, `--bitrate`
+  and `--engine`.
+- **Renderer** (`readalong/render.py`): planned with `article`'s planner,
+  synthesized through the timed cache path, and assembled with the same
+  helpers as `article`. It encodes at 24 kHz, checks the encoded file, then
+  writes the timings and the page.
+- **Timeline** (`readalong/timeline.py`): absolute token times from integer
+  sample counts.
+- **Encode checks** (`readalong/encode.py`): decodes the file back to compare
+  its length and rate, and cross-correlates the start to measure any offset.
+- **Display** (`readalong/display.py`): blocks (heading, paragraph, list
+  item, quote) and the Markdown-syntax spans the page hides.
+- **Alignment** (`readalong/align.py`): tokens located in the spoken text,
+  sentence ids, and the *temporary* spoken → display word alignment.
+- **`timings.json`** (`readalong/build.py`, `readalong/schema.py`): schema
+  v1 plus a hand-written validator.
+- **Player** (`readalong/player.html`, filled in by `readalong/page.py`):
+  - word highlight, sentence underline and auto-scroll;
+  - click-to-seek, Space, ←/→ for sentences and Shift+←/→ for paragraphs;
+  - a progress bar and a light/dark theme.
+- **Engine timings and cache sidecars** from Phase 2 (`tts/`, `pipeline.py`).
+- **Shared helpers** factored out of existing code, with output
+  byte-identical:
+  - `audio.silence_samples`;
+  - `article.join_sections`, `section_starts`, `article_cache`,
+    `article_tags` and `build_normalizer`;
+  - `segment.paragraph_sentences`.
+- **Tests**:
+  - `tests/test_timings.py`: 47 tests, plus 3 real-Kokoro tests that skip
+    without weights;
+  - `tests/test_readalong.py`: 42 tests, including one that plays a page in
+    headless Chromium (`tests/browser/readalong_check.js`) and skips without
+    Node + Playwright.
 - **Spike**: `scripts/spike_kokoro_timestamps.py` and
-  `scripts/spike_player.html`. The spike now calls the engine's own
-  `times_from_durations`.
+  `scripts/spike_player.html`.
+
+**Not yet:**
+- **Exact highlighting for normalizer rewrites.** These wait for Phase 4
+  receipts. Until then, a run of consecutive rewrites shares one coarse
+  highlight, e.g. `1939-1945, e.g.`.
+- **Player extras** (Phase 5): step modes, speed control, resume, sentence
+  ticks on the progress bar, and a chapter sidebar.
+- **Other formats:** PDF/EPUB/DOCX/HTML/PPTX input (Phase 5).
 
 ## What I found (verified against the code, not the brief)
 
@@ -179,12 +203,15 @@ string path, which carries zero risk for existing commands. The new
 existing test input and fixture. If they ever diverge, the test fails, which
 also guarantees that read-along and `article` share cache entries.
 
-**Segmentation.** An internal `_segment()` returns, for each chunk, the
-sentences it was packed from. `segment_chapter()` returns exactly the chunks it
-returns today. A mapped wrapper aligns each chunk's text back into the
-`MappedText` (whitespace-tolerant cursor) and sets the new optional field
-`Chunk.spoken_map`, plus spoken sentence spans. Clause-split parts keep their
-parent sentence id, so the underline spans the whole sentence.
+**Segmentation, as built in Phase 3.** `segment_chapter()` is unchanged in
+output. The paragraph → sentence split it packs from is now a public function,
+`paragraph_sentences()`, and `segment_chapter` calls it.
+`align.sentence_ids()` walks a section's chunks and its sentences together,
+matching non-space characters, so every chunk character gets a sentence id.
+Clause-split parts of a long sentence therefore share one id, and the
+underline spans the whole sentence. This replaces the `_segment()` /
+`Chunk.spoken_map` idea from the first draft, which isn't needed until Phase
+4.
 
 **Alignment (`readalong/align.py`).** For each token, search case-insensitively
 from a moving cursor in the chunk's spoken text, tolerating quote and whitespace
@@ -201,25 +228,68 @@ Markdown pass (`#`, `**`, `- `, link URLs). The player hides these, so the page
 reads as prose rather than raw Markdown. Removed citations and lexicon drops
 are not markup: they stay visible but are never highlighted.
 
-**Timeline (`readalong/timeline.py`).** Times are counted in integer samples:
-each chunk's audio, its trailing silence, and the section silence, using the
-same `silence_samples()` helper that `concat_with_silence` will be refactored to
-call (identical arithmetic). Seconds are computed once at the end, never from
-the encoded file. Encoding passes `-ar 24000`. Afterwards the file is decoded
-back to PCM to check two things: the sample count must be within one codec
-frame (1024 for AAC, 1152 for mp3), and cross-correlating the first 5 s against
-the pre-encode PCM must give an offset of at most 20 ms. A larger offset is
-written to `audio_offset_s`.
+**Timeline (`readalong/timeline.py`), as built in Phase 3.**
+- *Counting.* Times are counted in integer samples: each chunk's audio, its
+  trailing pause, and the 1200 ms section pause. The arithmetic is shared with
+  assembly: `silence_samples()` for every pause, and
+  `article.section_starts()` next to `join_sections()`.
+- *Consistency.* The renderer raises if the timeline length differs from the
+  assembled audio by even one sample. Seconds are computed once; nothing is
+  measured from the encoded file.
+- *Encoding.* `write_chapter(..., output_sample_rate=24000)` adds `-ar 24000`
+  only for read-along.
+- *Encoded check* (`readalong/encode.py`). Measured with ffmpeg here:
+  - the sample rate stays 24 kHz with loudnorm;
+  - mp3 decodes to exactly the PCM length, and m4a is +148 samples of end
+    padding (under one 1024-sample frame);
+  - cross-correlating the first 5 s gives an offset of 0 ms for both formats
+    (correlation 0.995 or higher).
 
-**Player (`readalong/player.html`).** One template with inline CSS and JS. The
-timings are inlined as `<script type="application/json">`, with `</` escaped.
-The audio is referenced by relative path, or embedded as base64 with
-`--embed-audio`. Sync is a rAF loop with a binary search, and it touches the DOM
-only when the highlighted unit changes. All other behaviour follows brief §4.7.
+  An offset over 20 ms would be written to `audio_offset_s`.
 
-**CLI and reuse.** `narrate read`. `render_article` is split so `article` and
-`read` share the plan → synthesize step. `read` additionally keeps per-chunk
-results and sample counts. For `article`, the audio stays identical.
+**Display ↔ spoken alignment, Phase 3 stand-in.** The brief suggested naive
+sequential matching. A greedy windowed matcher derailed in testing: "for"
+from "e.g." latched onto a later "for", and every word after it shifted. So
+Phase 3 instead aligns the two word sequences with the standard library's
+`difflib.SequenceMatcher`.
+- Matches stay in order, and a far match is never preferred, because it
+  would cost every match in between.
+- Unmatched spoken words share the display text between their matched
+  neighbours: `$4.2M`, `Dr.`, `FBI`, `21st`.
+- Only *runs* of consecutive rewrites (`1939-1945, e.g.`) end up coarse.
+
+Phase 4 replaces this with exact receipts.
+
+**`timings.json` additions to the brief's schema** (all validated):
+- `timing_source` (`engine` / `estimated` / `mixed`);
+- `markup` (spans the page hides);
+- `number` on ordered list items.
+
+The file is written one record per line, so a re-render after an edit gives a
+readable diff.
+
+**Player, as built in Phase 3.** A single template
+(`readalong/player.html`); `page.py` inlines the JSON with every `<` escaped,
+so document text cannot close the script.
+- *Rendering.* Blocks become `h1`–`h6`, `p`, `ul`/`ol > li` and
+  `blockquote`. Adjacent words with the same span form one `.w` unit, and
+  each sentence is a `.s` span.
+- *Sync.* A requestAnimationFrame loop plus a binary search; it touches the
+  DOM only when the unit or sentence changes.
+- *Highlight rule.* A word stays lit until the next word starts. It clears
+  in gaps over 1 s (section pauses) and after the last word.
+- *Heading pause.* The brief's 1 s rule alone would keep a heading's last
+  word lit through its 800 ms pause. The player also clears the highlight
+  when a heading's last word ends and the next word is in another block, as
+  §7 asks.
+- *Auto-scroll* keeps the current sentence near the upper third, and pauses
+  for 4 s after a wheel, touch, scrollbar or scroll-key action.
+- *Missing audio* shows a banner naming the file.
+
+**CLI and reuse, as built.** `narrate read` takes `article`'s planner,
+cache directory (`work/<file-stem>/cache`), normalizer and tags, so `article`
+and `read` on the same file share every chunk. The output folder is
+`out/<file-stem>/`. `--format mp3` prints a sync warning; `wav` is refused.
 
 **Future work (out of scope).** Highlighting on rendered PDF pages, using
 Docling provenance boxes plus PyMuPDF word boxes. EPUB 3 Media Overlays: SMIL
@@ -390,3 +460,89 @@ cross-check, and fill the remaining `None` values as in the design.
    inaudible, and from then on `speak`, `article` and `read` share the
    entry.
 3. The 96/48 kHz `loudnorm` question from Phase 1 is still open.
+
+### Phase 3 — `narrate read` for Markdown and text
+
+**What changed.**
+
+- **New package `src/narrate/readalong/`.**
+  - `render.py` orchestrates: plan → timed synthesis → assembly → timeline →
+    encode at 24 kHz → encoded check → `timings.json` → page.
+  - `timeline.py`, `encode.py`, `display.py`, `align.py`, `build.py`,
+    `schema.py` and `page.py` are described under Design.
+  - `player.html` is the page template, shipped in the wheel.
+- **`cli.py`.** New `read` command. It refuses `wav`, warns for `mp3`,
+  explains empty documents, and prints any encode/timing warnings.
+- **`article.py`.** `render_article` now uses the extracted `join_sections`,
+  `article_cache`, `article_tags` and `build_normalizer`. `section_starts`
+  is new.
+- **`audio.py`.** Adds `silence_samples()`, now used by
+  `concat_with_silence`. `write_chapter`/`_encode` gain the opt-in
+  `output_sample_rate`.
+- **`segment.py`.** `paragraph_sentences()` is extracted;
+  `segment_chapter` calls it.
+- **Tests.**
+  - `tests/stub_engine.py`: `TimedStubEngine` now emits tone bursts instead
+    of flat levels, so codecs and the offset correlation see real signal.
+    Its timings are unchanged.
+  - `tests/test_readalong.py` (42 tests):
+    - *Timeline:* hand-computed cumulative sums across all four pause types
+      and an empty section; strict ordering; speed 0.9.
+    - *Alignment:* token location, punctuation, misses, clause-split
+      sentences; display alignment for `$4.2M` / `Dr.` / `FBI` and the
+      derailment regression; markup hiding in every block (regression);
+      block parsing.
+    - *timings.json:* schema validity, spans inside the text, sentences with
+      words, display text = speakable Markdown, citations/URLs/lexicon drops
+      never highlighted, heading words and their pause, long sentence = one
+      sentence, validator negatives, writer round-trip.
+    - *Encoding:* m4a/mp3 × loudnorm keep length, rate and start; the old
+      96 kHz behaviour is untouched without the opt-in; offset detection
+      finds a known 30 ms delay and declines on silence.
+    - *Page:* inline JSON equals the file, nothing external, script
+      break-out escaped, `--embed-audio`.
+    - *Cache:* `article` → `read` shares every chunk; an edit re-renders one
+      chunk and updates the timings exactly; an untimed engine falls back to
+      estimates.
+    - *CLI:* files, `--open`, the mp3 warning, wav refusal, empty document,
+      PDF refusal.
+    - *Browser:* `tests/browser/readalong_check.js` plays a page in headless
+      Chromium at phone width. It checks that the lit unit tracks the clock
+      at every sample, click-to-seek, →, Shift+→, auto-scroll into view,
+      auto-scroll suspension after a manual scroll, no horizontal overflow,
+      and no console errors.
+
+**Verified.**
+
+- Full suite: 287 passed, 3 skipped (real Kokoro). The only failures are the
+  same 7 Hugging Face-blocked PDF ingest tests as the baseline.
+- The browser test passed in 3 of 3 repeat runs (about 9 s each).
+- **Regression:** the same 7-file `article`/`speak` render (wav/mp3/m4a with
+  and without loudnorm, plus a `speak` mp3) has identical MD5s before and
+  after Phase 3. They also match the pre-Phase-2 code.
+- Screenshots of the stub page in light (820 px) and dark (390 px) themes
+  checked by eye: highlight, sentence underline, hidden Markdown syntax,
+  visible citation.
+
+**Not verified here.** There has been no end-to-end run with real Kokoro
+audio, because the weights can't be downloaded in this environment. The brief's
+"real Markdown note plays with visibly correct sync" has so far been checked
+with stub audio, where the timings are exact by construction. With Kokoro, sync
+also depends on the timestamp accuracy that the Phase 1 spike measures.
+
+**What's next (Phase 4).**
+
+- `MappedText` and mapped twins of every normalizer pass, with a string
+  equality test against today's normalizer.
+- Per-chunk spoken → display maps.
+- Replace `naive_display_spans` with receipt-based spans, so a run like
+  `1939-1945, e.g.` splits into its exact parts.
+
+**Open issues.**
+
+1. Real-audio accuracy and an end-to-end Kokoro run (see Phase 1).
+2. mp3 sync in browsers that ignore the LAME delay header is not measurable
+   here. The CLI warns, and m4a is the default.
+3. A `--format` switch leaves the other format's file in the folder; only the
+   one named in `timings.json` is used.
+4. The 96/48 kHz question for `speak`/`article` is still open.

@@ -26,13 +26,21 @@ def token_samples(token: str, *, speed: float = 1.0, sample_rate: int = SAMPLE_R
     return round(sample_rate * 0.1 * len(token) / 5 / speed)
 
 
+def _tone(samples: int, frequency: float) -> np.ndarray:
+    """A burst with a raised-cosine envelope, so token edges do not click."""
+    t = np.arange(samples) / SAMPLE_RATE
+    envelope = np.sin(np.pi * (np.arange(samples) + 0.5) / max(samples, 1)) ** 0.5
+    return (0.25 * envelope * np.sin(2 * np.pi * frequency * t)).astype(np.float32)
+
+
 class TimedStubEngine:
     """Audio is the tokens laid end to end; timings are exact sample counts.
 
     Each token is ``100 ms x len / 5`` long, divided by ``speed``, with no
     gaps, so the expected time of any token is a plain cumulative sum. Every
-    token's audio has its own level, which lets tests check that the bytes
-    ``synthesize`` and ``synthesize_with_timings`` return are the same.
+    token is a tone burst of its own pitch: real enough for a codec and for the
+    encoder-offset correlation, and distinct enough that tests can check the
+    bytes ``synthesize`` and ``synthesize_with_timings`` return are the same.
     """
 
     name = "stub-timed"
@@ -57,7 +65,7 @@ class TimedStubEngine:
         cursor = 0
         for i, token in enumerate(_TOKEN.findall(text)):
             samples = token_samples(token, speed=speed)
-            parts.append(np.full(samples, 0.05 + 0.001 * (i % 50), dtype=np.float32))
+            parts.append(_tone(samples, 180.0 + 23.0 * (i % 17)))
             words.append(
                 WordTiming(
                     text=token,
