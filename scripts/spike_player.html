@@ -1,0 +1,106 @@
+<!doctype html>
+<!-- Phase 1 spike page. Throwaway: the real player is src/narrate/readalong/player.html. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kokoro timestamp spike</title>
+<style>
+  :root { --bg: #fdfcf9; --fg: #1d1d1b; --muted: #6b6b66; --hi: #ffe58a; --hi-edge: #b38600; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181a; --fg: #e8e6e1; --muted: #9a988f; --hi: #5c4a00; --hi-edge: #ffd34d; }
+  }
+  body { background: var(--bg); color: var(--fg); margin: 0;
+         font: 1.15rem/1.7 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 70ch; margin: 2rem auto; padding: 0 16px; }
+  h1 { font-size: 1rem; color: var(--muted); font-weight: 600; }
+  #text span[data-i] { cursor: pointer; border-radius: 3px; padding: 0 1px;
+                       border-bottom: 2px solid transparent; }
+  #text span.current { background: var(--hi); border-bottom-color: var(--hi-edge); }
+  audio { width: 100%; margin: 1rem 0; }
+  #debug { font: 0.85rem/1.4 ui-monospace, monospace; color: var(--muted); white-space: pre-wrap; }
+  label { font-size: 0.9rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Spike: Kokoro token timestamps</h1>
+  <audio id="audio" controls preload="auto"></audio>
+  <label>Nudge highlight <input id="nudge" type="range" min="-300" max="300" step="10" value="0">
+    <output id="nudgeOut">0 ms</output></label>
+  <p id="text"></p>
+  <div id="debug"></div>
+</main>
+<script id="data" type="application/json">/*__SPIKE_DATA__*/null</script>
+<script>
+"use strict";
+const data = JSON.parse(document.getElementById("data").textContent);
+const audio = document.getElementById("audio");
+const text = document.getElementById("text");
+const debug = document.getElementById("debug");
+const nudge = document.getElementById("nudge");
+audio.src = data.audio;
+
+// One span per word token, in order; punctuation and whitespace are plain text.
+// A new internal result has lost its separating whitespace, so add a space.
+const words = [];
+let lastResult = 0;
+for (const token of data.tokens) {
+  if (token.result !== lastResult) { text.append(" "); lastResult = token.result; }
+  if (/[\p{L}\p{N}]/u.test(token.text) && token.start !== null) {
+    const span = document.createElement("span");
+    span.dataset.i = words.length;
+    span.textContent = token.text;
+    words.push({ start: token.start, end: token.end, text: token.text, el: span });
+    text.append(span);
+  } else {
+    text.append(token.text);
+  }
+  text.append(token.whitespace);
+}
+
+// Last word with start <= t. Words are in playback order.
+function find(t) {
+  let lo = 0, hi = words.length - 1, best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (words[mid].start <= t) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return best;
+}
+
+let current = -1;
+function tick() {
+  const t = audio.currentTime + Number(nudge.value) / 1000;
+  let i = find(t);
+  // Stay lit through short gaps; clear during long ones.
+  if (i >= 0 && t > words[i].end && (i + 1 >= words.length || words[i + 1].start - words[i].end > 1)) i = -1;
+  if (i !== current) {
+    if (current >= 0) words[current].el.classList.remove("current");
+    if (i >= 0) words[i].el.classList.add("current");
+    current = i;
+    document.body.dataset.current = String(i);
+  }
+  const w = i >= 0 ? words[i] : null;
+  debug.textContent = `t=${t.toFixed(3)}s  ` +
+    (w ? `"${w.text}" [${w.start.toFixed(3)} – ${w.end.toFixed(3)}]` : "(none)") +
+    `\nvoice ${data.voice} · speed ${data.speed}\n` + JSON.stringify(data.stats, null, 1);
+  if (!audio.paused) requestAnimationFrame(tick);
+}
+
+text.addEventListener("click", (event) => {
+  const span = event.target.closest("span[data-i]");
+  if (!span) return;
+  audio.currentTime = words[Number(span.dataset.i)].start;
+  tick();
+});
+nudge.addEventListener("input", () => {
+  document.getElementById("nudgeOut").textContent = `${nudge.value} ms`;
+  tick();
+});
+audio.addEventListener("play", () => requestAnimationFrame(tick));
+audio.addEventListener("seeked", tick);
+tick();
+</script>
+</body>
+</html>
