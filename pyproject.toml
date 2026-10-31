@@ -56,6 +56,9 @@ packages = ["src/narrate"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "kokoro: needs Kokoro-82M weights in the local Hugging Face cache; skipped otherwise",
+]
 
 [tool.ruff]
 line-length = 100

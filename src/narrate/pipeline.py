@@ -28,7 +28,7 @@ from narrate.ingest import ingest
 from narrate.ingest.chapterize import split_into_chapters
 from narrate.normalize import Lexicon, get_normalizer
 from narrate.segment import segment_chapter
-from narrate.tts import AudioCache, get_engine
+from narrate.tts import AudioCache, SynthesisResult, get_engine, synthesize_with_timings
 
 log = logging.getLogger(__name__)
 
@@ -451,24 +451,56 @@ def synthesize_chunks(
     config: NarrationConfig,
     on_chunk: Callable[[], None] | None = None,
 ):
-    """Render chunks through the cache and join them with their pauses."""
+    """Render chunks through the cache and join them with their pauses.
+
+    A cache hit needs only the audio, so entries cached before word timings
+    existed are reused as they are. New renders store the engine's timings
+    alongside, which lets a later ``narrate read`` of the same text reuse
+    them - the audio is identical either way.
+    """
     pieces = []
     for chunk in chunks:
         audio = cache.get(
             chunk, engine=engine.name, voice=config.voice, speed=config.speed
         )
         if audio is None:
-            audio = engine.synthesize(
-                chunk.text, voice=config.voice, speed=config.speed
+            result = synthesize_with_timings(
+                engine, chunk.text, voice=config.voice, speed=config.speed
             )
-            cache.put(
-                chunk, audio, engine=engine.name, voice=config.voice, speed=config.speed
+            cache.put_result(
+                chunk, result, engine=engine.name, voice=config.voice, speed=config.speed
             )
+            audio = result.audio
         pieces.append((audio, chunk.trailing_silence_ms))
         if on_chunk:
             on_chunk()
 
     return concat_with_silence(pieces, sample_rate=engine.sample_rate)
+
+
+def synthesize_chunk_with_timings(
+    chunk: Chunk, *, engine, cache: AudioCache, config: NarrationConfig
+) -> SynthesisResult:
+    """One chunk's audio and word timings, through the cache.
+
+    Stricter than :func:`synthesize_chunks`: cached audio without a timings
+    sidecar is re-synthesized rather than reused, because a read-along page
+    built on guessed timings would be visibly off. ``words`` is ``None`` only
+    if the engine cannot report timings at all; see ``tts.timing_estimate``.
+    """
+    cached = cache.get_with_timings(
+        chunk, engine=engine.name, voice=config.voice, speed=config.speed
+    )
+    if cached is not None:
+        return cached
+
+    result = synthesize_with_timings(
+        engine, chunk.text, voice=config.voice, speed=config.speed
+    )
+    cache.put_result(
+        chunk, result, engine=engine.name, voice=config.voice, speed=config.speed
+    )
+    return result
 
 
 def _render_chapter(
@@ -528,5 +560,6 @@ __all__ = [
     "write_checkpoint",
     "plan_chapter",
     "synthesize_chunks",
+    "synthesize_chunk_with_timings",
     "format_duration",
 ]

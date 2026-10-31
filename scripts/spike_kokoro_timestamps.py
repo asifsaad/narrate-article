@@ -70,61 +70,16 @@ def synthesize(spoken: str, *, voice: str, speed: float):
 
 
 def rederive_times(tokens, phonemes: str, pred_dur, vocab) -> list[tuple[float | None, float | None]]:
-    """Token times recomputed from ``pred_dur``, in half-frames like upstream.
+    """Token times recomputed from ``pred_dur`` - the engine's own code path.
 
-    ``KPipeline.join_timestamps`` has an off-by-one: a token with no phonemes
-    but trailing whitespace (``~``, ``★``) advances its index twice, so every
-    later token is attributed the next phoneme's duration and the last ones
-    run off the end as ``None``. It also assumes one model input per phoneme
-    character, while ``KModel.forward`` silently drops characters missing from
-    the vocab. This walk mirrors how the pipeline actually built its input:
-    ``tokens_to_ps`` for positions, the vocab filter for indices.
+    Upstream ``join_timestamps`` advances twice past a token with no phonemes
+    but trailing whitespace, and ignores the vocab filter in ``KModel.forward``.
+    ``narrate.tts.kokoro_engine.times_from_durations`` fixes both; the spike
+    calls it so a run measures exactly what read-along will use.
     """
-    durations = [int(d) for d in pred_dur.tolist()]
-    built = "".join(t.phonemes + (" " if t.whitespace else "") for t in tokens)
-    lead = len(built) - len(built.lstrip())
+    from narrate.tts.kokoro_engine import times_from_durations
 
-    # Model input index for every character of the phoneme string (BOS is 0).
-    index_of: list[int | None] = []
-    position = 1
-    for char in phonemes:
-        if vocab is None or char in vocab:
-            index_of.append(position)
-            position += 1
-        else:
-            index_of.append(None)
-
-    def frames(a: int, b: int) -> int | None:
-        if a < 0 or b > len(index_of):
-            return None  # truncated past 510 phonemes
-        return sum(durations[i] for i in index_of[a:b] if i is not None and i < len(durations))
-
-    left = right = 2 * max(0, durations[0] - 3)
-    cursor = -lead
-    times: list[tuple[float | None, float | None]] = []
-    for token in tokens:
-        size = len(token.phonemes)
-        space = 1 if token.whitespace else 0
-        if not size:
-            gap = frames(cursor, cursor + space) if space and cursor >= 0 else 0
-            if gap:
-                left = right + gap
-                right = left + gap
-            times.append((None, None))
-            cursor += space
-            continue
-        token_frames = frames(max(cursor, 0), cursor + size)
-        if token_frames is None:
-            times.append((None, None))
-            cursor += size + space
-            continue
-        space_frames = (frames(cursor + size, cursor + size + space) or 0) if space else 0
-        start = left
-        left = right + 2 * token_frames + space_frames
-        right = left + space_frames
-        times.append((start / 80, left / 80))
-        cursor += size + space
-    return times
+    return times_from_durations(tokens, phonemes, [int(d) for d in pred_dur.tolist()], vocab)
 
 
 def flatten(results, vocab=None) -> tuple[list[dict], np.ndarray, list[dict]]:

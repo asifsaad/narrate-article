@@ -6,6 +6,44 @@ audio plus a self-contained page that highlights the word being spoken.
 This file records what the code actually looks like, where it differs from the
 task brief, the design, and a log entry per phase.
 
+## Status
+
+| Phase | State |
+|---|---|
+| 0 — read the code, baseline, this plan | done |
+| 1 — Kokoro timestamp spike | done; real-audio accuracy numbers still pending (needs weights) |
+| 2 — engine timings + cache sidecars | **done** |
+| 3 — timeline + player for Markdown/text | next |
+| 4 — normalizer receipts | not started |
+| 5 — polish, all inputs, README section | not started |
+| 6 — live mode | design only, needs a go-ahead |
+
+`narrate read` does not exist yet. What exists so far:
+
+- **Engine contract** (`tts/base.py`): `WordTiming`, `SynthesisResult`, the
+  optional `TimedSynthesisEngine` protocol, and the
+  `synthesize_with_timings(engine, text, ...)` helper. The helper returns
+  `words=None` for engines that only implement `synthesize`.
+- **Kokoro** (`tts/kokoro_engine.py`): `synthesize_with_timings()` returns the
+  same samples as `synthesize()`, plus a timing for every token, punctuation
+  included. The times are recomputed from the model's predicted durations
+  (`times_from_durations`), not taken from Kokoro's own timestamps.
+- **Estimator** (`tts/timing_estimate.py`): `estimate_word_timings()` and
+  `with_estimated_timings()`, for engines without timings.
+- **Cache** (`tts/cache.py`): a `<key>.timings.json` sidecar next to each
+  `<key>.wav`, written by `put_result()` and read by `get_with_timings()`. The
+  plain `get()` is unchanged.
+- **Pipeline** (`pipeline.py`): `synthesize_chunks` (used by `speak` and
+  `article`) now stores timings with every new render. The new
+  `synthesize_chunk_with_timings()` is the strict timed path that read-along
+  will use.
+- **Tests**: `tests/stub_engine.py` (deterministic timed and untimed stub
+  engines) and `tests/test_timings.py` (47 tests, plus 3 real-Kokoro tests
+  that skip without weights).
+- **Spike**: `scripts/spike_kokoro_timestamps.py` and
+  `scripts/spike_player.html`. The spike now calls the engine's own
+  `times_from_durations`.
+
 ## What I found (verified against the code, not the brief)
 
 **Repository and branch.** The working repo is `asifsaad/narrate-article`, not
@@ -109,11 +147,22 @@ alignment, and filtered out when words are built.
 `tts/timing_estimate.py` spreads the duration across words by character
 length, for engines without timings.
 
-**Cache (`tts/cache.py`).** Add a `<key>.timings.json` sidecar next to
-`<key>.wav`; the key does not change. `get_with_timings()` treats a WAV without
-a sidecar as a miss, so the chunk is re-synthesized rather than estimated, and
-logs this once per cache. `put(..., words=None)` writes the sidecar only when
-timings exist, so `speak`/`article` write exactly what they write today.
+**Cache (`tts/cache.py`), as built in Phase 2.** A `<key>.timings.json`
+sidecar sits next to `<key>.wav`; the key does not change.
+- *Format:* `{"version": 1, "words": [[text, start, end], ...]}`. `"words":
+  null` means the engine cannot report timings.
+- *Write:* `put_result()` writes the audio first, then the sidecar, so an
+  interrupted run never leaves timings without audio. The plain `put()`
+  deletes any sidecar for its key, because that sidecar described a
+  different render.
+- *Read:* `get()` is unchanged and ignores sidecars. `get_with_timings()`
+  treats audio without a sidecar as a miss, so the chunk is re-synthesized
+  rather than estimated; it counts these in `cache.stale` and logs once per
+  cache. It also discards sidecars that are unreadable, from another format
+  version, or that outlast their audio by more than 50 ms.
+- *Deviation from the earlier draft:* `speak` and `article` now *do* write the
+  sidecar, as the brief allows. Their output audio is unchanged. In exchange,
+  a later `narrate read` reuses every chunk they rendered.
 
 **Receipts (`normalize/mapped.py`).** `MappedText(text, starts, ends)` stores the
 spans in two `array('l')` columns instead of a list of tuples, which saves
@@ -250,3 +299,94 @@ cross-check, and fill the remaining `None` values as in the design.
 1. Real-audio numbers are pending; see above.
 2. Should `speak`/`article` also get `-ar 24000`? Today `loudnorm` outputs
    96/48 kHz.
+
+### Phase 2 — engine timings and cache sidecars
+
+**What changed.**
+
+- **`tts/base.py`.** Adds `WordTiming(text, start, end)` and
+  `SynthesisResult(audio, sample_rate, words)` (`eq=False`, because arrays
+  have no single truth value), plus a `duration` property. Adds the
+  `TimedSynthesisEngine` protocol and the `synthesize_with_timings()` helper.
+  `synthesize()` and the `SynthesisEngine` protocol are untouched.
+- **`tts/kokoro_engine.py`.**
+  - `synthesize()` and the new `synthesize_with_timings()` share `_run()`,
+    which makes the same single `KPipeline(text, voice=, speed=)` call as
+    before.
+  - `_collect()` is unchanged in behaviour; `_samples()` was split out of it
+    so the timing code counts samples exactly the way the audio is joined.
+  - `token_timings()` offsets each internal result by the samples before it.
+  - `times_from_durations()` is the corrected duration walk from Phase 1.
+  - `_fill_gaps()` gives every token a time. A missing start takes the
+    previous end; a missing end takes the next start, or the end of the audio.
+    Starts never go backwards and no token outlasts its audio.
+  - If the tokens can't be read, the result keeps its audio, `words=None` is
+    returned, and a warning is logged.
+  - Punctuation tokens are kept. Phase 3/4 alignment filters them out as
+    words.
+- **`tts/timing_estimate.py`.** `estimate_word_timings(text, duration)` gives
+  each whitespace-separated word a share proportional to its length, with no
+  gaps. `with_estimated_timings(result, text)` fills in `words` only when
+  they are `None`.
+- **`tts/cache.py`.** Sidecars, as described in the Design section. Adds
+  `timings_path_for`, `get_with_timings` and `put_result`; `cache.stale`
+  counts entries that had audio but no sidecar.
+- **`pipeline.py`.** `synthesize_chunks()` renders misses through
+  `synthesize_with_timings()` and `put_result()`; hits still use `get()`. Adds
+  `synthesize_chunk_with_timings()` for read-along.
+- **`pyproject.toml`.** Registers the `kokoro` pytest marker.
+- **Tests.** `tests/stub_engine.py` has `TimedStubEngine` (each token lasts
+  100 ms × length / 5 ÷ speed, laid end to end, so the expected times are
+  plain cumulative sums) and `UntimedStubEngine`. `tests/test_timings.py`
+  covers:
+  - the contract and speed scaling;
+  - the estimator;
+  - the duration walk against hand-worked values, and against Kokoro's own
+    walk on clean input when `kokoro` is installed;
+  - the junk-token, vocab-filter and truncation cases;
+  - gap filling and multi-result offsets;
+  - audio staying identical between the two Kokoro methods, using a fake
+    pipeline;
+  - every cache sidecar case;
+  - unchanged cache keys (golden hashes);
+  - the pipeline paths, including `speak` → timed path reusing every chunk.
+
+  The real-Kokoro tests (`-m kokoro`, both voices, speed 0.9) run offline and
+  skip when the weights aren't cached.
+
+**Verified.**
+
+- Full suite: 245 passed, 3 skipped (real Kokoro). The 6 failures and 1 error
+  are the same Hugging Face-blocked PDF ingest tests as the baseline.
+- The new file runs in about 8 s warm, most of it the one-time `kokoro`
+  import. The first run after a package rebuild is slower.
+- **Regression check:** the same note was rendered with the pre-Phase-2 code
+  (stashed) and the new code, as `article` in wav, mp3 and m4a with and
+  without loudnorm, plus one `speak` mp3. All 7 output files have identical
+  MD5s. The only difference on disk is one small `.timings.json` per cached
+  chunk.
+
+**What's next (Phase 3).**
+
+- `narrate read` for `.md`/`.txt`, reusing `article`'s plan → render step.
+- `readalong/timeline.py`: sample-exact times across chunk and section
+  silences.
+- 24 kHz encoding for read-along, plus the encoded-length and encoder-offset
+  checks.
+- `timings.json` v1 and `readalong/player.html` with sync, click-to-seek,
+  auto-scroll and basic controls.
+- Naive sequential word → display matching until Phase 4.
+
+**Open issues.**
+
+1. Real-audio accuracy is still unmeasured. If the spike shows a constant
+   onset bias, it becomes one constant in `times_from_durations`. If
+   `samples != pred_dur · 600`, the times will need scaling to the real audio
+   length. For now `_fill_gaps` only clamps them to it.
+2. An entry first cached by an older version is re-rendered once by the timed
+   path, and the new render replaces the cached WAV. Kokoro's decoder draws
+   random phase and noise (`torch.rand`/`randn_like` in `istftnet.py`), so
+   that render is not bit-identical to the old one. The difference is
+   inaudible, and from then on `speak`, `article` and `read` share the
+   entry.
+3. The 96/48 kHz `loudnorm` question from Phase 1 is still open.

@@ -93,9 +93,41 @@ ingest -> chapterize -> normalize -> segment -> synthesize -> assemble
    budget. Never splits mid-sentence; assigns inter-sentence and
    inter-paragraph pauses while paragraph structure is still visible.
 5. **Synthesize** (`tts/`) — Kokoro-82M behind a `SynthesisEngine` protocol.
-   Every chunk is cached by content hash.
+   Every chunk is cached by content hash, as `<hash>.wav` plus a small
+   `<hash>.timings.json` holding when each word is spoken (see
+   [Read-along](#read-along-in-progress)). The timings ride along on the same
+   model call, so the audio is unchanged by them.
 6. **Assemble** (`audio.py`) — concatenate with generated silence, apply EBU
    R128 loudness normalization (-19 LUFS, -3 dBTP), encode and tag.
+
+## Read-along (in progress)
+
+A `narrate read` command is being built. It will write audio plus a
+self-contained page that highlights each word as it is spoken. The command
+**does not exist yet**. The plan, the findings, and a log of each phase are
+in [`docs/read-along/PLAN.md`](docs/read-along/PLAN.md).
+
+What is in place so far:
+
+- **Word timings from Kokoro.** `KokoroEngine.synthesize_with_timings()`
+  returns the same audio as `synthesize()`, plus the start and end of every
+  token. The times are recomputed from Kokoro's duration predictor
+  (`times_from_durations`), which avoids an off-by-one in upstream's
+  `join_timestamps` after symbols such as `~` or `★`. Engines that cannot
+  report timings get an estimate from `tts/timing_estimate.py`.
+- **Timings in the cache.** Every newly rendered chunk, including from
+  `speak` and `article`, stores its timings next to its audio, so a later
+  read-along run reuses it. Audio cached before this change is still reused
+  by `speak` and `article`. Read-along re-renders such a chunk once, because
+  it has no timings.
+- **A timestamp spike** you can run to see the timings on real audio:
+
+  ```bash
+  uv run --extra kokoro python scripts/spike_kokoro_timestamps.py
+  open out/spike/index.html
+  ```
+
+  `--g2p-only` shows Kokoro's tokens without needing the model weights.
 
 ## Model choices
 
@@ -172,3 +204,15 @@ uv run --group dev pytest tests/ -q
 three sentinel strings — one in prose, one only inside table cells, one only in
 a figure caption. The suite asserts the first survives and the other two do
 not.
+
+Synthesis is faked with deterministic stub engines (`tests/stub_engine.py`),
+so the suite needs no model weights. A few tests marked `kokoro` render real
+audio; they run offline and skip unless Kokoro-82M is already in the local
+Hugging Face cache:
+
+```bash
+uv run --group dev --extra kokoro pytest tests/ -m kokoro -v
+```
+
+The PDF tests need Docling's layout models from Hugging Face, so they fail on
+a machine that cannot reach it.

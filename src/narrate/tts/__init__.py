@@ -9,7 +9,11 @@ from narrate.tts.base import (
     EngineUnavailableError,
     SynthesisEngine,
     SynthesisError,
+    SynthesisResult,
+    TimedSynthesisEngine,
     Voice,
+    WordTiming,
+    synthesize_with_timings,
 )
 from narrate.tts.cache import AudioCache
 
@@ -18,7 +22,11 @@ __all__ = [
     "EngineUnavailableError",
     "SynthesisEngine",
     "SynthesisError",
+    "SynthesisResult",
+    "TimedSynthesisEngine",
     "Voice",
+    "WordTiming",
+    "synthesize_with_timings",
     "ENGINES",
     "get_engine",
 ]
